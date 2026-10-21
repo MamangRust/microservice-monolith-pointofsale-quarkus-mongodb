@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-create-stats-topics
+  namespace: point-of-sale
+spec:
+  # Clean up the finished Job automatically so repeat applies don't pile up.
+  ttlSecondsAfterFinished: 300
+  # Limited retries: topic creation is idempotent (--if-not-exists), so a few
+  # attempts against a not-yet-ready broker is enough before giving up.
+  backoffLimit: 3
+  template:
+    spec:
+      serviceAccountName: app
+      automountServiceAccountToken: false
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-topic-init
+          # Pin to the same image as the broker (apache/kafka:3.7.0) so the
+          # embedded kafka-topics.sh matches the cluster and the tag actually
+          # exists in the registry.
+          image: apache/kafka:3.7.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              BOOTSTRAP="kafka.point-of-sale.svc.cluster.local:9092"
+
+              echo "Waiting for Kafka broker at $BOOTSTRAP ..."
+              until kafka-topics.sh --bootstrap-server "$BOOTSTRAP" --list >/dev/null 2>&1; do
+                echo "Kafka not ready yet, retrying in 5s..."
+                sleep 5
+              done
+              echo "Kafka is ready."
+
+              # Consumed by stats-writer (StatsWriterConsumer) and produced by
+              # the order (order + order_item) and transaction services.
+              echo "Creating point-of-sale stats Kafka topics..."
+              for topic in \
+                stats.pos.order.event \
+                stats.pos.order_item.event \
+                stats.pos.transaction.event; do
+                kafka-topics.sh \
+                  --bootstrap-server "$BOOTSTRAP" \
+                  --create \
+                  --if-not-exists \
+                  --replication-factor 1 \
+                  --partitions 1 \
+                  --topic "$topic"
+              done
+              echo "All point-of-sale stats topics created (or already exist)."
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"

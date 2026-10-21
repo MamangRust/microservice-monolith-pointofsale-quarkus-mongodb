@@ -491,6 +491,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-topics-init:
+        condition: service_completed_successfully
       clickhouse:
         condition: service_healthy
       order:
@@ -580,6 +582,41 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  # One-shot topic provisioning (mirrors the K8s kafka-create-stats-topics Job).
+  # Relies on Kafka auto-create as a fallback, but this makes topic existence
+  # deterministic and independent of auto.create.topics.enable. Uses the same
+  # apache/kafka image as the broker; PATH is exported so kafka-topics.sh
+  # resolves even when command overrides the image entrypoint.
+  kafka-topics-init:
+    image: apache/kafka:latest
+    container_name: kafka-topics-init-pointofsale
+    networks:
+      - app_pointofsale_network
+    depends_on:
+      kafka:
+        condition: service_started
+    restart: "no"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        export PATH=/opt/kafka/bin:$$PATH
+        BOOTSTRAP="kafka:9092"
+        echo "Waiting for Kafka broker at $$BOOTSTRAP ..."
+        until kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" --list >/dev/null 2>&1; do
+          echo "Kafka not ready yet, retrying in 5s..."
+          sleep 5
+        done
+        echo "Kafka is ready."
+        for topic in \
+          stats.pos.order.event \
+          stats.pos.order_item.event \
+          stats.pos.transaction.event; do
+          kafka-topics.sh --bootstrap-server "$$BOOTSTRAP" --create --if-not-exists \
+            --replication-factor 1 --partitions 1 --topic "$$topic"
+        done
+        echo "All point-of-sale stats topics created (or already exist)."
 
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.9.0

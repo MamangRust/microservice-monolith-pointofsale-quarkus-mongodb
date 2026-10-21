@@ -7,3 +7,4 @@ resources:
 - kafka-exporter-service.yaml
 - kafka-pvc.yaml
 - kafka-service.yaml
+- kafka-create-stats-topics.yaml
